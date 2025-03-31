@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/ 
+venv/
+.git/
+.vscode/
+*.db  # Exclude your SQLite database file if you don't want it baked into the image
+*.db-journal # Exclude SQLite journal files
+.dockerignore
+Dockerfile
+README.md
