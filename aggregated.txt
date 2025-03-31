@@ -1,0 +1,370 @@
+.\db_utils.py
+from databases import Database
+from models import BaseJob, BaseMaintenanceTask, BaseRobot, Job, MaintenanceTask, Robot
+
+class DbUtils:
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def create_tables(self):
+        robots_create = """CREATE TABLE IF NOT EXISTS Robots (id INTEGER Primary Key, name varchar(100), model varchar(100), serial_number INTEGER unique)"""
+
+        await self.db.execute(robots_create)
+
+        standard_maintenance_create = """CREATE TABLE IF NOT EXISTS StandardMaintenanceTasks (id INTEGER Primary Key, name varchar(100), description varchar(500), frequency INTEGER)"""
+
+        await self.db.execute(standard_maintenance_create)
+
+        jobs_create = """CREATE TABLE IF NOT EXISTS Jobs (
+            id INTEGER Primary Key,
+            robot_id INTEGER,
+            task_id INTEGER,
+            due_date DATE,
+            status TEXT DEFAULT 'New',
+            FOREIGN KEY (robot_id) REFERENCES Robots (id),
+            FOREIGN KEY (task_id) REFERENCES StandardMaintenanceTasks (id)
+        )"""
+
+        await self.db.execute(jobs_create)
+
+    async def get_robots(self) -> list[Robot]:
+        query = """SELECT * FROM Robots"""
+
+        return await self.db.fetch_all(query)
+    
+    async def get_robot_by_id(self, id: int) -> Robot:
+        query = """SELECT * FROM Robots WHERE id = :id"""
+        robot = await self.db.fetch_one(query, values={"id": id})
+
+        return robot
+    
+    async def get_robot_by_serial_number(self, serial_number: str) -> Robot:
+        existing_query = """SELECT * FROM Robots WHERE serial_number = :serial_number"""
+        robot = await self.db.fetch_one(existing_query, values={'serial_number': serial_number})
+
+        return robot
+    
+    async def create_robot(self, robot: BaseRobot) -> Robot:
+        add_query = """INSERT INTO Robots (name, model, serial_number) VALUES (:name, :model, :serial_number)"""
+        values = {
+            "name": robot.name,
+            "model": robot.model,
+            "serial_number": robot.serial_number
+        }
+
+        created_id = await self.db.execute(add_query, values)
+
+        return await self.get_robot_by_id(created_id)
+    
+    async def delete_robot(self, id: int):
+        query = """DELETE Robots WHERE id = :id"""
+        
+        await self.db.execute(query, values={"id": id})
+
+    async def create_maintenance_task(self, task: BaseMaintenanceTask) -> MaintenanceTask:
+        add_query = """INSERT INTO StandardMaintenanceTasks (name, description, frequency) VALUES (:name, :description, :frequency)"""
+        values = {
+            "name": task.name,
+            "description": task.description,
+            "frequency": task.frequency
+        }
+
+        created_id = await self.db.execute(add_query, values)
+
+        return await self.get_maintenance_task_by_id(created_id)
+    
+    async def get_maintenance_tasks(self) -> list[MaintenanceTask]:
+        query = """SELECT * FROM StandardMaintenanceTasks"""
+
+        return await self.db.fetch_all(query)
+    
+    async def get_maintenance_task_by_id(self, id: int) -> Robot:
+        query = """SELECT * FROM StandardMaintenanceTasks WHERE id = :id"""
+        task = await self.db.fetch_one(query, values={"id": id})
+
+        return task
+    
+    async def delete_maintenance_task(self, id: int):
+        query = """DELETE StandardMaintenanceTasks WHERE id = :id"""
+        
+        await self.db.execute(query, values={"id": id})
+
+    async def create_job(self, job: BaseJob) -> Job:
+        add_query = """INSERT INTO Jobs (robot_id, task_id, due_date) VALUES (:robot_id, :task_id, :due_date)"""
+        values = {
+            "robot_id": job.robot_id,
+            "task_id": job.task_id,
+            "due_date": job.due_date
+        }
+
+        created_id = await self.db.execute(add_query, values)
+
+        return await self.get_job_by_id(created_id)
+    
+    async def get_jobs(self, robot_id: int | None, task_id: int | None) -> list[Job]:
+        query = """SELECT * FROM Jobs"""
+        values = {}
+
+        if robot_id is not None or task_id is not None:
+            query += " WHERE"
+
+            if robot_id is not None:
+                query += " robot_id == :robot_id"
+                values['robot_id'] = robot_id
+            
+            if robot_id is not None and task_id is not None:
+                query += " AND"
+
+            if task_id is not None:
+                query += " task_id == :task_id"
+                values['task_id'] = task_id
+
+        return await self.db.fetch_all(query, values=values)
+    
+    async def get_job_by_id(self, id: int) -> Job:
+        query = """SELECT * FROM Jobs WHERE id = :id"""
+        job = await self.db.fetch_one(query, values={"id": id})
+
+        return job
+    
+    async def delete_job(self, id: int):
+        query = """DELETE Jobs WHERE id = :id"""
+        
+        await self.db.execute(query, values={"id": id})
+
+    async def update_job_status(self, id: int, new_status: str) -> Job:
+        query = """UPDATE Jobs SET status = :new_status WHERE id = :id"""
+        values = {
+            'new_status': new_status,
+            'id': id
+        }
+
+        await self.db.execute(query, values=values)
+
+        return await self.get_job_by_id(id)
+
+   
+.\main.py
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Query
+from contextlib import asynccontextmanager
+from databases import Database
+import httpx
+from db_utils import DbUtils
+from models import BaseJob, BaseMaintenanceTask, Job, MaintenanceTask, Robot, BaseRobot
+
+db_provider = 'sqlite+aiosqlite:///./'
+db_path = 'example.db'
+db_url = db_provider + db_path
+
+db = Database(db_url)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    #setup
+    print('Starting db setup')
+    await db.connect()
+    await db_utils.create_tables()
+    print('Db setup complete')
+    yield
+
+    #teardown
+    print('Disconnecting db...')
+    await db.disconnect()
+    print('Db disconnected')
+
+app = FastAPI(lifespan=lifespan)
+db_utils = DbUtils(db=db)
+
+@app.get('/robots')
+async def get_robots() -> list[Robot]:
+    robots = await db_utils.get_robots()
+
+    return robots
+
+@app.get('/robots/{robot_id}')
+async def get_robot(robot_id: int) -> Robot:
+    robot = await db_utils.get_robot_by_id(robot_id)
+
+    if robot is None:
+        raise HTTPException(status_code=404, detail=f'Robot not found by id {robot_id}')
+    else:
+        return robot
+    
+@app.post('/robots')
+async def add_robot(robot: BaseRobot) -> Robot:
+    # first check existing
+    robot_with_same_serial = await db_utils.get_robot_by_serial_number(robot.serial_number)
+
+    if robot_with_same_serial is not None:
+        return { 'error': f'Robot with serial number {robot.serial_number} already exists'}
+
+    created_robot = await db_utils.create_robot(robot)
+
+    print(f'Added a robot by serial number of {robot.serial_number}')
+    return created_robot
+
+@app.delete('/robots/{robot_id}')
+async def delete_robot(robot_id: int):
+    await db_utils.delete_robot(robot_id)
+
+    print(f'Deleted a robot by id {robot_id}')
+
+@app.get('/maintenance-tasks')
+async def get_maintenance_tasks() -> list[MaintenanceTask]:
+    tasks = await db_utils.get_maintenance_tasks()
+
+    return tasks
+
+@app.get('/maintenance-tasks/{task_id}')
+async def get_maintenance_task(task_id: int) -> Robot:
+    task = await db_utils.get_maintenance_task_by_id(task_id)
+
+    if task is None:
+        raise HTTPException(status_code=404, detail=f'Task not found by id {task_id}')
+    else:
+        return task
+    
+@app.post('/maintenance-tasks')
+async def add_maintenance_task(task: BaseMaintenanceTask) -> MaintenanceTask:
+    task = await db_utils.create_maintenance_task(task)
+
+    print(f'Added a task by id of {task.id}')
+    return task
+
+@app.delete('/maintenance-tasks/{task_id}')
+async def delete_maintenance_task(task_id: int):
+    await db_utils.delete_maintenance_task(task_id)
+
+    print(f'Deleted a task by id {task_id}')
+
+@app.get('/jobs')
+async def get_jobs(robot_id: Optional[str] = Query(None, title="Robot id", description="Optional filter"), task_id: Optional[str] = Query(None, title="Task id", description="Optional filter")) -> list[Job]:
+    tasks = await db_utils.get_jobs(robot_id, task_id)
+
+    return tasks
+
+@app.get('/jobs/{job_id}')
+async def get_job(job_id: int) -> Job:
+    job = await db_utils.get_job_by_id(job_id)
+
+    if job is None:
+        raise HTTPException(status_code=404, detail=f'Job not found by id {job_id}')
+    else:
+        return job
+    
+@app.post('/jobs')
+async def add_job(job: BaseJob) -> Job:
+    robot = await db_utils.get_robot_by_id(job.robot_id)
+    if robot is None:
+        raise HTTPException(status_code=404, detail=f"Robot not found by id {job.robot_id}")
+    
+    task = await db_utils.get_maintenance_task_by_id(job.task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task not found by id {job.task_id}")
+
+    created_job = await db_utils.create_job(job)
+
+    print(f'Added a job by id of {created_job.id}')
+    return created_job
+
+@app.delete('/jobs/{job_id}')
+async def delete_job(job_id: int):
+    await db_utils.delete_job(job_id)
+
+    print(f'Deleted a job by id {job_id}')
+
+@app.put('/jobs/{job_id}/status')
+async def update_job_status(job_id: int, status: str) -> Job:
+    updated_job = await db_utils.update_job_status(job_id, status)
+
+    print(f'Updated job {job_id} to status of "{status}"')
+
+    return updated_job
+
+@app.post('/jobs/{job_id}/notify')
+async def notify_job_details(job_id: int):
+    job = await db_utils.get_job_by_id(job_id)
+    robot = await db_utils.get_robot_by_id(job.robot_id)
+    task = await db_utils.get_maintenance_task_by_id(job.task_id)
+
+    data = {
+        'job_id': job_id,
+        'robot_id': robot.id,
+        'task_id': task.id,
+        'robot_name': robot.name,
+        'task_name': task.name
+    }
+
+    notify_url = 'https://httpbin.org/post'
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(notify_url, json = data)
+        json = response.json()
+
+        print(f'Received response for job details notify of job {job_id}')
+        print(json)
+   
+.\models.py
+from datetime import date
+from pydantic import BaseModel
+
+class BaseRobot(BaseModel):
+    name: str
+    model: str
+    serial_number: str
+
+class Robot(BaseRobot):
+    id: int
+
+class BaseMaintenanceTask(BaseModel):
+    name: str
+    description: str
+    frequency: int
+
+class MaintenanceTask(BaseMaintenanceTask):
+    id: int
+
+class BaseJob(BaseModel):
+    robot_id: int
+    task_id: int
+    due_date: date
+
+class Job(BaseJob):
+    id: int
+    status: str
+   
+.\server_tester.py
+from datetime import date, timedelta
+import requests
+
+base_url = 'http://localhost:8000/'
+custom_part = 'jobs?robot_id=3'
+
+url = base_url + custom_part
+
+tomorrow = date.today() + timedelta(days=1)
+
+robot_data = {
+    'name': 'Robo Mobo Alpha',
+    'model': 'Good 0.9',
+    'serial_number': 'ISO_MISO_SCHMISO_6000'
+}
+
+task_data = {
+    'name': 'Wash dishes',
+    'description': 'just do it',
+    'frequency': 4
+}
+
+job_data = {
+    'robot_id': 1,
+    'task_id': 1,
+    'due_date': tomorrow.isoformat()
+}
+
+response = requests.get(url)
+json = response.json()
+
+print(json)
+   
